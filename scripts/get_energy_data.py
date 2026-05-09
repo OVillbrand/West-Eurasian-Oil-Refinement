@@ -7,13 +7,23 @@ import os
 # Ensures script checks/uses the correct folder for samples 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
 
 eu_file = os.path.join(DATA_DIR, "eu_energy_sample.csv")
 russia_file = os.path.join(DATA_DIR, "russia_energy_sample.csv")
+import_file = os.path.join(DATA_DIR, "eu_imports_2020.csv")
 
 # --- CONFIGURATION ---
 # Using os.getenv to use a key localy in the system
 MY_API_KEY = os.getenv("EIA_API_KEY", "YOUR_API_KEY_HERE")
+
+def filter_russia_imports(df):
+    """Filters EU imports data to only include Russia as partner country."""
+    # Filter for Russia imports (typically in 'partner' or similar column)
+    # Common column names in Eurostat: 'partner', 'geo', 'country'
+    if 'partner' in df.columns:
+        df = df[df['partner'].str.contains('RU', case=False, na=False)]
+    return df
 
 def get_russia_eia_data(api_key):
     """Fetches Russian monthly oil production from EIA with error handling."""
@@ -64,7 +74,23 @@ def get_energy_data(force_update=False):
             if os.path.exists(eu_file):
                 eu_df = pd.read_csv(eu_file)
 
-    # 2. RUSSIA DATA LOGIC (EIA)
+    # 2. EU IMPORTS DATA LOGIC (Eurostat)
+    eu_import_df = pd.DataFrame()
+    if not force_update and os.path.exists(import_file):
+        print("Loading EU imports data from local cache...")
+        eu_import_df = pd.read_csv(import_file)
+    else:
+        try:
+            print("Fetching EU imports data from Eurostat...")
+            eu_import_df = eurostat.get_data_df('nrg_ti_oilm')
+            eu_import_df = filter_russia_imports(eu_import_df)
+            eu_import_df.to_csv(import_file, index=False)
+        except Exception:
+            print("Eurostat imports failed. Falling back to local cache.")
+            if os.path.exists(import_file):
+                eu_import_df = pd.read_csv(import_file)
+
+    # 3. RUSSIA DATA LOGIC (EIA)
     russia_df = pd.DataFrame()
     # Only try API if we need an update AND we have a valid-looking key
     attempt_api = force_update or not os.path.exists(russia_file)
@@ -86,13 +112,17 @@ def get_energy_data(force_update=False):
     if not eu_df.empty and 'nrg_bal' in eu_df.columns:
         eu_production = eu_df[eu_df['nrg_bal'].str.contains('PRD', na=False)]
 
-    return eu_production, russia_df
+    return eu_production, eu_import_df, russia_df
 
 # --- EXECUTION ---
-eu_df, russia_df = get_energy_data()
+eu_df, eu_imports, russia_df = get_energy_data()
 
 if not russia_df.empty:
     print("\n--- Russian Production Summary ---")
     print(russia_df.head())
 else:
     print("\nCRITICAL: No Russian data available (API failed and no local file found).")
+
+if not eu_imports.empty:
+    print("\n--- EU Imports Summary ---")
+    print(eu_imports.head())
